@@ -1,4 +1,4 @@
- /*
+/*
  * Software License Agreement (BSD License)
  *
  *  Copyright (c) 2011, Willow Garage, Inc.
@@ -35,6 +35,7 @@
  */
 
 #include "device_memory.hpp"
+#include <algorithm>
 #include "convenience.cuh"
 
 #include "cuda_runtime_api.h"
@@ -43,59 +44,64 @@
 //////////////////////////    XADD    ///////////////////////////////
 
 #ifdef __GNUC__
-    
-    #if __GNUC__*10 + __GNUC_MINOR__ >= 42
 
-        #if !defined WIN32 && (defined __i486__ || defined __i586__ || defined __i686__ || defined __MMX__ || defined __SSE__  || defined __ppc__)
-            #define CV_XADD __sync_fetch_and_add
-        #else
-            #include <ext/atomicity.h>
-            #define CV_XADD __gnu_cxx::__exchange_and_add
-        #endif
-    #else
-        #include <bits/atomicity.h>
-        #if __GNUC__*10 + __GNUC_MINOR__ >= 34
-            #define CV_XADD __gnu_cxx::__exchange_and_add
-        #else
-            #define CV_XADD __exchange_and_add
-        #endif
-  #endif
-    
+#if __GNUC__ * 10 + __GNUC_MINOR__ >= 42
+
+#if !defined WIN32 && (defined __i486__ || defined __i586__ || defined __i686__ || defined __MMX__ || defined __SSE__ || defined __ppc__)
+#define CV_XADD __sync_fetch_and_add
+#else
+#include <ext/atomicity.h>
+#define CV_XADD __gnu_cxx::__exchange_and_add
+#endif
+#else
+#include <bits/atomicity.h>
+#if __GNUC__ * 10 + __GNUC_MINOR__ >= 34
+#define CV_XADD __gnu_cxx::__exchange_and_add
+#else
+#define CV_XADD __exchange_and_add
+#endif
+#endif
+
 #elif defined WIN32 || defined _WIN32
-    #include <intrin.h>
-    #define CV_XADD(addr,delta) _InterlockedExchangeAdd((long volatile*)(addr), (delta))
+#include <intrin.h>
+#define CV_XADD(addr, delta) _InterlockedExchangeAdd((long volatile *)(addr), (delta))
 #else
 
-    template<typename _Tp> static inline _Tp CV_XADD(_Tp* addr, _Tp delta)
-    { int tmp = *addr; *addr += delta; return tmp; }
-    
+template <typename _Tp>
+static inline _Tp CV_XADD(_Tp *addr, _Tp delta)
+{
+    int tmp = *addr;
+    *addr += delta;
+    return tmp;
+}
+
 #endif
 
 ////////////////////////    DeviceArray    /////////////////////////////
-    
+
 DeviceMemory::DeviceMemory() : data_(0), sizeBytes_(0), refcount_(0) {}
-DeviceMemory::DeviceMemory(void *ptr_arg, size_t sizeBytes_arg) : data_(ptr_arg), sizeBytes_(sizeBytes_arg), refcount_(0){}
-DeviceMemory::DeviceMemory(size_t sizeBtes_arg)  : data_(0), sizeBytes_(0), refcount_(0) { create(sizeBtes_arg); }
+DeviceMemory::DeviceMemory(void *ptr_arg, size_t sizeBytes_arg) : data_(ptr_arg), sizeBytes_(sizeBytes_arg), refcount_(0) {}
+DeviceMemory::DeviceMemory(size_t sizeBtes_arg) : data_(0), sizeBytes_(0), refcount_(0) { create(sizeBtes_arg); }
 DeviceMemory::~DeviceMemory() { release(); }
 
-DeviceMemory::DeviceMemory(const DeviceMemory& other_arg)
+DeviceMemory::DeviceMemory(const DeviceMemory &other_arg)
     : data_(other_arg.data_), sizeBytes_(other_arg.sizeBytes_), refcount_(other_arg.refcount_)
 {
-    if( refcount_ )
+    if (refcount_)
         CV_XADD(refcount_, 1);
 }
 
-DeviceMemory& DeviceMemory::operator = (const DeviceMemory& other_arg)
+DeviceMemory &DeviceMemory::operator=(const DeviceMemory &other_arg)
 {
-    if( this != &other_arg )
+    if (this != &other_arg)
     {
-        if( other_arg.refcount_ )
+        if (other_arg.refcount_)
             CV_XADD(other_arg.refcount_, 1);
         release();
-        
-        data_      = other_arg.data_;
-        sizeBytes_ = other_arg.sizeBytes_;                
-        refcount_  = other_arg.refcount_;
+
+        data_ = other_arg.data_;
+        sizeBytes_ = other_arg.sizeBytes_;
+        refcount_ = other_arg.refcount_;
     }
     return *this;
 }
@@ -104,39 +110,39 @@ void DeviceMemory::create(size_t sizeBytes_arg)
 {
     if (sizeBytes_arg == sizeBytes_)
         return;
-            
-    if( sizeBytes_arg > 0)
-    {        
-        if( data_ )
+
+    if (sizeBytes_arg > 0)
+    {
+        if (data_)
             release();
 
         sizeBytes_ = sizeBytes_arg;
-                        
-        CudaSafeCall( cudaMalloc(&data_, sizeBytes_) );        
+
+        cudaErrorCheck(cudaMalloc(&data_, sizeBytes_));
 
         refcount_ = new int;
         *refcount_ = 1;
     }
 }
 
-void DeviceMemory::copyTo(DeviceMemory& other) const
+void DeviceMemory::copyTo(DeviceMemory &other) const
 {
     if (empty())
         other.release();
     else
-    {    
-        other.create(sizeBytes_);    
-        CudaSafeCall( cudaMemcpy(other.data_, data_, sizeBytes_, cudaMemcpyDeviceToDevice) );
-        CudaSafeCall( cudaDeviceSynchronize() );
+    {
+        other.create(sizeBytes_);
+        cudaErrorCheck(cudaMemcpy(other.data_, data_, sizeBytes_, cudaMemcpyDeviceToDevice));
+        cudaErrorCheck(cudaDeviceSynchronize());
     }
 }
 
 void DeviceMemory::release()
 {
-    if( refcount_ && CV_XADD(refcount_, -1) == 1 )
+    if (refcount_ && CV_XADD(refcount_, -1) == 1)
     {
         delete refcount_;
-        CudaSafeCall( cudaFree(data_) );
+        cudaErrorCheck(cudaFree(data_));
     }
     data_ = 0;
     sizeBytes_ = 0;
@@ -146,17 +152,17 @@ void DeviceMemory::release()
 void DeviceMemory::upload(const void *host_ptr_arg, size_t sizeBytes_arg)
 {
     create(sizeBytes_arg);
-    CudaSafeCall( cudaMemcpy(data_, host_ptr_arg, sizeBytes_, cudaMemcpyHostToDevice) );
-    CudaSafeCall( cudaDeviceSynchronize() );
+    cudaErrorCheck(cudaMemcpy(data_, host_ptr_arg, sizeBytes_, cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaDeviceSynchronize());
 }
 
 void DeviceMemory::download(void *host_ptr_arg) const
-{    
-    CudaSafeCall( cudaMemcpy(host_ptr_arg, data_, sizeBytes_, cudaMemcpyDeviceToHost) );
-    CudaSafeCall( cudaDeviceSynchronize() );
-}          
+{
+    cudaErrorCheck(cudaMemcpy(host_ptr_arg, data_, sizeBytes_, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaDeviceSynchronize());
+}
 
-void DeviceMemory::swap(DeviceMemory& other_arg)
+void DeviceMemory::swap(DeviceMemory &other_arg)
 {
     std::swap(data_, other_arg.data_);
     std::swap(sizeBytes_, other_arg.sizeBytes_);
@@ -166,43 +172,40 @@ void DeviceMemory::swap(DeviceMemory& other_arg)
 bool DeviceMemory::empty() const { return !data_; }
 size_t DeviceMemory::sizeBytes() const { return sizeBytes_; }
 
-
 ////////////////////////    DeviceArray2D    /////////////////////////////
 
 DeviceMemory2D::DeviceMemory2D() : data_(0), step_(0), colsBytes_(0), rows_(0), refcount_(0) {}
 
 DeviceMemory2D::DeviceMemory2D(int rows_arg, int colsBytes_arg)
     : data_(0), step_(0), colsBytes_(0), rows_(0), refcount_(0)
-{ 
-    create(rows_arg, colsBytes_arg); 
+{
+    create(rows_arg, colsBytes_arg);
 }
 
 DeviceMemory2D::DeviceMemory2D(int rows_arg, int colsBytes_arg, void *data_arg, size_t step_arg)
-    :  data_(data_arg), step_(step_arg), colsBytes_(colsBytes_arg), rows_(rows_arg), refcount_(0) {}
+    : data_(data_arg), step_(step_arg), colsBytes_(colsBytes_arg), rows_(rows_arg), refcount_(0) {}
 
 DeviceMemory2D::~DeviceMemory2D() { release(); }
 
-
-DeviceMemory2D::DeviceMemory2D(const DeviceMemory2D& other_arg) :
-    data_(other_arg.data_), step_(other_arg.step_), colsBytes_(other_arg.colsBytes_), rows_(other_arg.rows_), refcount_(other_arg.refcount_)
+DeviceMemory2D::DeviceMemory2D(const DeviceMemory2D &other_arg) : data_(other_arg.data_), step_(other_arg.step_), colsBytes_(other_arg.colsBytes_), rows_(other_arg.rows_), refcount_(other_arg.refcount_)
 {
-    if( refcount_ )
+    if (refcount_)
         CV_XADD(refcount_, 1);
 }
 
-DeviceMemory2D& DeviceMemory2D::operator = (const DeviceMemory2D& other_arg)
+DeviceMemory2D &DeviceMemory2D::operator=(const DeviceMemory2D &other_arg)
 {
-    if( this != &other_arg )
+    if (this != &other_arg)
     {
-        if( other_arg.refcount_ )
+        if (other_arg.refcount_)
             CV_XADD(other_arg.refcount_, 1);
         release();
-        
+
         colsBytes_ = other_arg.colsBytes_;
         rows_ = other_arg.rows_;
         data_ = other_arg.data_;
         step_ = other_arg.step_;
-                
+
         refcount_ = other_arg.refcount_;
     }
     return *this;
@@ -212,16 +215,16 @@ void DeviceMemory2D::create(int rows_arg, int colsBytes_arg)
 {
     if (colsBytes_ == colsBytes_arg && rows_ == rows_arg)
         return;
-            
-    if( rows_arg > 0 && colsBytes_arg > 0)
-    {        
-        if( data_ )
+
+    if (rows_arg > 0 && colsBytes_arg > 0)
+    {
+        if (data_)
             release();
-              
+
         colsBytes_ = colsBytes_arg;
         rows_ = rows_arg;
-                        
-        CudaSafeCall( cudaMallocPitch( (void**)&data_, &step_, colsBytes_, rows_) );        
+
+        cudaErrorCheck(cudaMallocPitch((void **)&data_, &step_, colsBytes_, rows_));
 
         refcount_ = new int;
         *refcount_ = 1;
@@ -230,50 +233,50 @@ void DeviceMemory2D::create(int rows_arg, int colsBytes_arg)
 
 void DeviceMemory2D::release()
 {
-    if( refcount_ && CV_XADD(refcount_, -1) == 1 )
+    if (refcount_ && CV_XADD(refcount_, -1) == 1)
     {
         delete refcount_;
-        CudaSafeCall( cudaFree(data_) );
+        cudaErrorCheck(cudaFree(data_));
     }
 
     colsBytes_ = 0;
-    rows_ = 0;    
-    data_ = 0;    
+    rows_ = 0;
+    data_ = 0;
     step_ = 0;
     refcount_ = 0;
 }
 
-void DeviceMemory2D::copyTo(DeviceMemory2D& other) const
+void DeviceMemory2D::copyTo(DeviceMemory2D &other) const
 {
     if (empty())
         other.release();
     else
     {
-        other.create(rows_, colsBytes_);    
-        CudaSafeCall( cudaMemcpy2D(other.data_, other.step_, data_, step_, colsBytes_, rows_, cudaMemcpyDeviceToDevice) );
-        CudaSafeCall( cudaDeviceSynchronize() );
+        other.create(rows_, colsBytes_);
+        cudaErrorCheck(cudaMemcpy2D(other.data_, other.step_, data_, step_, colsBytes_, rows_, cudaMemcpyDeviceToDevice));
+        cudaErrorCheck(cudaDeviceSynchronize());
     }
 }
 
 void DeviceMemory2D::upload(const void *host_ptr_arg, size_t host_step_arg, int rows_arg, int colsBytes_arg)
 {
     create(rows_arg, colsBytes_arg);
-    CudaSafeCall( cudaMemcpy2D(data_, step_, host_ptr_arg, host_step_arg, colsBytes_, rows_, cudaMemcpyHostToDevice) );        
+    cudaErrorCheck(cudaMemcpy2D(data_, step_, host_ptr_arg, host_step_arg, colsBytes_, rows_, cudaMemcpyHostToDevice));
 }
 
 void DeviceMemory2D::download(void *host_ptr_arg, size_t host_step_arg) const
-{    
-    CudaSafeCall( cudaMemcpy2D(host_ptr_arg, host_step_arg, data_, step_, colsBytes_, rows_, cudaMemcpyDeviceToHost) );
-}      
+{
+    cudaErrorCheck(cudaMemcpy2D(host_ptr_arg, host_step_arg, data_, step_, colsBytes_, rows_, cudaMemcpyDeviceToHost));
+}
 
-void DeviceMemory2D::swap(DeviceMemory2D& other_arg)
-{    
+void DeviceMemory2D::swap(DeviceMemory2D &other_arg)
+{
     std::swap(data_, other_arg.data_);
     std::swap(step_, other_arg.step_);
 
     std::swap(colsBytes_, other_arg.colsBytes_);
     std::swap(rows_, other_arg.rows_);
-    std::swap(refcount_, other_arg.refcount_);                 
+    std::swap(refcount_, other_arg.refcount_);
 }
 
 bool DeviceMemory2D::empty() const { return !data_; }
